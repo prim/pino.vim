@@ -5,23 +5,11 @@
 python << PYTHON_END
 
 import vim
-
-import os
-import sys
-import time
 import socket 
-
-home_dir = os.path.expanduser("~")
-plugin_dir = os.path.join(home_dir,".vim","bundle","MemorySearch.vim","plugin")
-
-from config import address, result_file_path
-
-pino_socket = None
-
 import json
 import traceback
 
-# TODO try socket error
+pino_socket = None
 
 def pino_request(*args):
     try:
@@ -45,8 +33,11 @@ def _pino_request(*args):
     global pino_socket
     if pino_socket is None:
         pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        pino_socket.connect(("127.0.0.1", 10240))
+        ip = vim.eval("g:pino_server_ip")
+        port = int(vim.eval("g:pino_server_port"))
+        pino_socket.connect((ip, port))
 
+    # TODO utf8
     binary = json.dumps(params).encode("utf8")
     length = len(binary)
     binary = b"Content-Length: %d\r\nContent-Type: application/vscode-jsonrpc; charset=utf8\r\n\r\n%s" % ( length, binary)
@@ -117,7 +108,7 @@ def pino_search_code(word):
     _quick_fix("search_word", word, 1)
 
 def pino_find_file(word):
-    _quick_fix("search_file", word)
+    _quick_fix("search_file", word, 0)
 
 def pino_completion(word):
     l, err = pino_request("completion", word, 10)

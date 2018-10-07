@@ -10,7 +10,8 @@ command! -nargs=1 PinoGrep :call pino#search('<args>')
 command! -nargs=1 PinoCode :call pino#search_code('<args>')
 command! -nargs=1 PinoFile :call pino#find_file('<args>')
 
-nnoremap <leader>gg :execute 'PinoGoto '.expand('<cword>')<cr>
+nnoremap <leader>gd :execute 'PinoGoto '.expand('<cword>')<cr>
+nnoremap <leader>gg :execute 'PinoGrep '.expand('<cword>')<cr>
 nnoremap <leader>gc :execute 'PinoCode '.expand('<cword>')<cr>
 
 let s:opt = {}
@@ -22,4 +23,7 @@ call asyncomplete#register_source({
     \ 'completor': function('pino#completor'),
     \ 'refresh_pattern': '\(\k\+$\|\.$\|>$\|:$\)',
     \ })
+
+let g:pino_server_ip = "127.0.0.1"
+let g:pino_server_port = 10240
 
