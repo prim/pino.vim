@@ -87,10 +87,22 @@ def _pino_request(*args):
             message = json.loads(binary[b:e])
             return message.get("result", "")
 
-def pino_init_project():
-    _, err = pino_request("reinit")
+def _action(action):
+    _, err = pino_request(action)
     if err:
         print err
+
+def pino_project_init():
+    _action("init")
+
+def pino_project_reinit():
+    _action("reinit")
+
+def pino_project_stat():
+    _action("stat")
+
+def pino_project_save():
+    _action("save")
 
 def _quick_fix(action, word, type_):
     result, err = pino_request(action, word, type_)
@@ -123,8 +135,20 @@ PYTHON_END
 " }}}
 
 " Vim Script {{{
-function! pino#init_project()
-    execute 'python pino_init_project()'
+function! pino#project_init()
+    execute 'python pino_project_init()'
+endfunction 
+
+function!pino#project_reinit()
+    execute 'python pino_project_reinit()'
+endfunction 
+
+function! pino#project_save()
+    execute 'python pino_project_save()'
+endfunction 
+
+function! pino#project_stat()
+    execute 'python pino_project_stat()'
 endfunction 
 
 function! pino#goto(word)
@@ -146,7 +170,7 @@ endfunction
 function! pino#completor(opt, ctx) abort
     let s:opt = copy(a:opt)
     let s:ctx = copy(a:ctx)
-    execute 'python pino_completion("' . a:ctx['typed'] . '")'
+    execute 'python pino_completion("""' . a:ctx['typed'] . '""")'
 endfunction
 
 function! s:handle_completion(items) abort
