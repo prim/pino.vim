@@ -31,13 +31,13 @@ def _pino_request(*args):
         }
     }
     global pino_socket
+
+    ip = vim.eval("g:pino_server_ip")
+    port = int(vim.eval("g:pino_server_port"))
     if pino_socket is None:
         pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ip = vim.eval("g:pino_server_ip")
-        port = int(vim.eval("g:pino_server_port"))
         pino_socket.connect((ip, port))
 
-    # TODO utf8
     binary = json.dumps(params).encode("utf8")
     length = len(binary)
     binary = b"Content-Length: %d\r\nContent-Type: application/vscode-jsonrpc; charset=utf8\r\n\r\n%s" % ( length, binary)
@@ -46,7 +46,7 @@ def _pino_request(*args):
         pino_socket.sendall(binary)
     except socket.error:
         pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        pino_socket.connect(("127.0.0.1", 10240))
+        pino_socket.connect((ip, port))
         pino_socket.sendall(binary)
 
     pino_recv_buffer = ""
