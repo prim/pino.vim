@@ -25,7 +25,7 @@ def _pino_request(*args):
         "id": 1,
         "method": action,
         "params": {
-            "cwf": vim.eval('expand("%p")'),
+            "cwf": vim.eval('expand("%:p")'),
             "cwd": vim.eval('getcwd()'),
             "args": args,
         }
@@ -107,6 +107,22 @@ def pino_project_save():
 def _quick_fix(action, word, type_):
     result, err = pino_request(action, word, type_)
     if not err:
+        if type_ == 0 and len(result) == 1:
+            filename = result[0]["filename"]
+            bufnr = vim.Function("bufnr")(filename)
+            if bufnr != -1:
+                cmd = "buffer %d" % bufnr
+            else:
+                cmd = "edit! %s" % filename
+            try:
+                vim.command(cmd)
+            except Exception:
+                pass
+            lnum = result[0]["lnum"]
+            # col = result[0]["text"].find(word)
+            # vim.command("echom %s" % repr((locals())))
+            vim.Function("cursor")(lnum, 1)
+            return 
         vim.Function("setqflist")(result)
         vim.command('copen')
 
