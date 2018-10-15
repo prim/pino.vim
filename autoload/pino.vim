@@ -8,21 +8,48 @@ import vim
 import socket 
 import json
 import traceback
+import threading
+import Queue
+
+import Queue
 
 pino_socket = None
+job_queue = Queue.Queue(maxsize = 128)
+vim_queue = Queue.Queue(maxsize = 128)
+
+def loop(job_queue):
+    while True:
+        args = job_queue.get(block = True)
+        handler = args[0]
+        args = args[1:]
+        # print "loop -> ", handler, args
+        pino_socket = socket_setup()
+        message = pino_send_request(pino_socket, *args)
+        # print "loop <- ", handler, message, args
+        vim_queue.put((handler, message, args))
+
+loop_thread = threading.Thread(target = loop, args = (job_queue, )) 
+loop_thread.start()
+
+def socket_setup():
+    global pino_socket
+    try:
+        if pino_socket:
+            pino_socket.getpeername()
+            return pino_socket
+        else:
+            raise socket.error
+    except socket.error:
+        ip = vim.eval("g:pino_server_ip")
+        port = int(vim.eval("g:pino_server_port"))
+        pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        pino_socket.connect((ip, port))
+        return pino_socket
 
 def pino_request(*args):
-    try:
-        return _pino_request(*args), None
-    except socket.error, e:
-        global pino_socket
-        pino_socket = None
-        return None, traceback.format_exc()
-    except Exception, e:
-        return None, traceback.format_exc()
+    job_queue.put(args)
 
-def _pino_request(*args):
-    print "_pino_request"
+def pino_send_request(pino_socket, *args):
     action = args[0]
     args = args[1:]
     params = {
@@ -35,13 +62,6 @@ def _pino_request(*args):
             "args": args,
         }
     }
-    global pino_socket
-
-    ip = vim.eval("g:pino_server_ip")
-    port = int(vim.eval("g:pino_server_port"))
-    if pino_socket is None:
-        pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        pino_socket.connect((ip, port))
 
     binary = json.dumps(params).encode("utf8")
     length = len(binary)
@@ -50,9 +70,7 @@ def _pino_request(*args):
     try:
         pino_socket.sendall(binary)
     except socket.error:
-        pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        pino_socket.connect((ip, port))
-        pino_socket.sendall(binary)
+        return 
 
     pino_recv_buffer = ""
     while True:
@@ -92,65 +110,69 @@ def _pino_request(*args):
             message = json.loads(binary[b:e])
             return message.get("result", "")
 
-def _action(action):
-    _, err = pino_request(action)
-    if err:
-        print err
+def pino_timer():
+    while True:
+        try:
+            handler, message, args = vim_queue.get(block = False)
+            # print "pino_timer", handler, message, args
+            handler and handler(message, *args)
+        except Queue.Empty:
+            # print "empty break"
+            break
 
 def pino_project_init():
-    _action("init")
+    pino_request(None, "init")
 
 def pino_project_reinit():
-    _action("reinit")
+    pino_request(None, "reinit")
 
 def pino_project_stat():
-    _action("stat")
+    pino_request(None, "stat")
 
 def pino_project_save():
-    _action("save")
+    pino_request(None, "save")
 
-def _quick_fix(action, word, type_):
-    result, err = pino_request(action, word, type_)
-    if not err:
-        if type_ == 0 and len(result) == 1:
-            filename = result[0]["filename"]
-            bufnr = vim.Function("bufnr")(filename)
-            if bufnr != -1:
-                cmd = "buffer %d" % bufnr
-            else:
-                cmd = "edit! %s" % filename
-            try:
-                vim.command(cmd)
-            except Exception:
-                pass
-            lnum = result[0]["lnum"]
-            # col = result[0]["text"].find(word)
-            # vim.command("echom %s" % repr((locals())))
-            vim.Function("cursor")(lnum, 1)
-            return 
-        vim.Function("setqflist")(result)
-        vim.command('copen')
+def quick_fix(result, _, __, type_):
+    if type_ == 0 and len(result) == 1:
+        filename = result[0]["filename"]
+        bufnr = vim.Function("bufnr")(filename)
+        if bufnr != -1:
+            cmd = "buffer %d" % bufnr
+        else:
+            cmd = "edit! %s" % filename
+        try:
+            vim.command(cmd)
+        except Exception:
+            pass
+        lnum = result[0]["lnum"]
+        # col = result[0]["text"].find(word)
+        # vim.command("echom %s" % repr((locals())))
+        vim.Function("cursor")(lnum, 1)
+        return 
+    vim.Function("setqflist")(result)
+    vim.command('copen')
 
 def pino_goto(word):
-    _quick_fix("search_word", word, 0)
+    pino_request(quick_fix, "search_word", word, 0)
 
 def pino_search(word):
-    _quick_fix("search_word", word, 2)
+    pino_request(quick_fix, "search_word", word, 2)
 
 def pino_search_code(word):
-    _quick_fix("search_word", word, 1)
+    pino_request(quick_fix, "search_word", word, 1)
 
 def pino_find_file(word):
-    _quick_fix("search_file", word, 0)
+    pino_request(quick_fix, "search_word", word, 0)
 
-def pino_completion(word):
-    l, err = pino_request("completion", word, 10)
-    if err:
-        print err
-    else:
+def completion(result, *args):
+    l = result
+    if l:
         l = l.split("\n")
         items = ",".join([('"%s"' % s) for s in l])
         vim.command("call s:handle_completion([%s])" % items)
+
+def pino_completion(word):
+    pino_request(completion, "completion", word, 10)
 
 PYTHON_END
 " }}}
@@ -205,4 +227,15 @@ function! s:handle_completion(items) abort
 
     call asyncomplete#complete(s:opt['name'], s:ctx, l:startcol, a:items, l:incomplete)
 endfunction
+
+let s:timer_tick = 10
+
+function! pino#timer(timer) abort
+    call timer_start(s:timer_tick, "pino#timer")
+    execute 'python pino_timer()'
+endfunction
+
+call timer_start(s:timer_tick, "pino#timer")
+
 " }}}
+
