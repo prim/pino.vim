@@ -21,6 +21,8 @@ def loop(job_queue):
     while True:
         args = job_queue.get(block = True)
         handler = args[0]
+        if handler == "vim_leave_quit":
+            break
         args = args[1:]
         # print "loop -> ", handler, args
         pino_socket = socket_setup()
@@ -30,6 +32,9 @@ def loop(job_queue):
 
 loop_thread = threading.Thread(target = loop, args = (job_queue, )) 
 loop_thread.start()
+
+def pino_leave_vim():
+    job_queue.put(("vim_leave_quit", ))
 
 def socket_setup():
     global pino_socket
@@ -236,6 +241,8 @@ function! pino#timer(timer) abort
 endfunction
 
 call timer_start(s:timer_tick, "pino#timer")
+
+autocmd VimLeave * execute 'python pino_leave_vim()'
 
 " }}}
 
