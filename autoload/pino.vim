@@ -14,10 +14,15 @@ pino_socket = None
 def pino_request(*args):
     try:
         return _pino_request(*args), None
+    except socket.error, e:
+        global pino_socket
+        pino_socket = None
+        return None, traceback.format_exc()
     except Exception, e:
         return None, traceback.format_exc()
 
 def _pino_request(*args):
+    print "_pino_request"
     action = args[0]
     args = args[1:]
     params = {
@@ -53,8 +58,8 @@ def _pino_request(*args):
     while True:
         data = pino_socket.recv(0xffff)
         if not data:
-            # TODO
-            break
+            # raise socket err
+            pino_socket.recv(0xffff)
         pino_recv_buffer += data
 
         binary = pino_recv_buffer
