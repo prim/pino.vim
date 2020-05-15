@@ -1,60 +1,99 @@
 " Pino.vim for the pino language server 
 
+if exists('g:pino_loaded')
+    finish
+endif
+let g:pino_loaded = 1
+
 " Python {{{ 
 
 python << PYTHON_END
 
+import os
 import vim
+import time
 import socket 
 import json
 import traceback
 import threading
 import Queue
 
-import Queue
-
+init = False
 pino_socket = None
 job_queue = Queue.Queue(maxsize = 128)
 vim_queue = Queue.Queue(maxsize = 128)
 
+def log(fmt, *args):
+    path = vim.eval("g:pino_log_file")
+    with open(path, "a+") as wf:
+        msg = "%s %s %s %s\n" % (os.getpid(), time.asctime(), fmt, args)
+        wf.write(msg)
+
+log("python importing")
+
 def loop(job_queue):
     while True:
-        args = job_queue.get(block = True)
-        handler = args[0]
-        if handler == "vim_leave_quit":
-            break
-        args = args[1:]
-        # print "loop -> ", handler, args
-        pino_socket = socket_setup()
-        message = pino_send_request(pino_socket, *args)
-        # print "loop <- ", handler, message, args
-        vim_queue.put((handler, message, args))
+        try:
+            log("pino thread recv begin", id(globals))
+            args = job_queue.get(block = True)
+            log("pino thread recv end", args)
 
-loop_thread = threading.Thread(target = loop, args = (job_queue, )) 
-loop_thread.start()
+            handler = args[0]
+            if handler == "vim_leave_quit":
+                log("pino thread recv vim_leave_quit")
+                break
+            args = args[1:]
+
+            while True:
+                try:
+                    result = pino_send_request(*args)
+                    break
+                except socket.error:
+                    socket_setup()
+
+            vim_queue.put((handler, result, args))
+
+        except Exception, err:
+            log("pino thread loop error", traceback.format_exc())
+
+    log("pino thread loop exit")
+
+def pino_init():
+    global init
+    if init:
+        log("pino init repeat")
+        return 
+    init = True
+    log("pino init")
+    global loop_thread
+    loop_thread = threading.Thread(target = loop, args = (job_queue, )) 
+    loop_thread.start()
 
 def pino_leave_vim():
+    log("pino_leave_vim begin")
     job_queue.put(("vim_leave_quit", ))
+    log("pino_leave_vim end")
 
 def socket_setup():
     global pino_socket
-    try:
-        if pino_socket:
-            pino_socket.getpeername()
-            return pino_socket
-        else:
-            raise socket.error
-    except socket.error:
-        ip = vim.eval("g:pino_server_ip")
-        port = int(vim.eval("g:pino_server_port"))
-        pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        pino_socket.connect((ip, port))
-        return pino_socket
+
+    ip = vim.eval("g:pino_server_ip")
+    port = int(vim.eval("g:pino_server_port"))
+
+    while True:
+        try:
+            log("socket setup try", ip, port)
+            pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            pino_socket.connect((ip, port))
+            log("socket_setup try end", pino_socket)
+            break
+        except socket.error:
+            time.sleep(1)
 
 def pino_request(*args):
     job_queue.put(args)
 
-def pino_send_request(pino_socket, *args):
+def jsonrpc_request(args):
     action = args[0]
     args = args[1:]
     params = {
@@ -69,64 +108,105 @@ def pino_send_request(pino_socket, *args):
     }
 
     binary = json.dumps(params).encode("utf8")
+    log("json rpc", params)
     length = len(binary)
-    binary = b"Content-Length: %d\r\nContent-Type: application/vscode-jsonrpc; charset=utf8\r\n\r\n%s" % ( length, binary)
+    binary = b"Content-Length: %d\r\nContent-Type: application/vscode-jsonrpc; charset=utf8\r\n\r\n%s" % (length, binary)
+    return binary
 
-    try:
-        pino_socket.sendall(binary)
-    except socket.error:
-        return 
+def jsonrpc_response(binary):
+    begin = 0
+    end = len(binary)
+    header_ending = b"\r\n\r\n"
+    header_ending_l = len(header_ending)
+
+    index = binary[begin:].find(header_ending)
+    if index == -1:
+        return
+
+    headers = {}
+    headers_list = binary[begin:begin + index].split(b"\r\n")
+    for header in headers_list:
+        i = header.find(b":")
+        if i == -1:
+            continue
+        key = header[:i]
+        value = header[i+2:]
+        headers[key.upper()] = value
+
+    for k, v in headers.items():
+        if v.isdigit():
+            headers[k] = int(v)
+
+    cl = headers.get(b"Content-Length".upper(), 0)
+    if begin + index + cl + header_ending_l <= end:
+        b = begin + index + header_ending_l
+        e = b + cl
+        log("json loads", binary, b, e, len(binary), cl)
+        log("json loads", binary[b:e])
+        message = json.loads(binary[b:e])
+        return message.get("result", "")
+
+def pino_send_request(*args):
+    global pino_socket
+    if pino_socket is None:
+        socket_setup()
+
+    binary = jsonrpc_request(args)
+
+    pino_socket.sendall(binary)
 
     pino_recv_buffer = ""
     while True:
         data = pino_socket.recv(0xffff)
         if not data:
-            # raise socket err
-            pino_socket.recv(0xffff)
+            raise socket.error
         pino_recv_buffer += data
+        log("socket recv", repr(pino_recv_buffer), type(pino_recv_buffer))
 
-        binary = pino_recv_buffer
-        begin = 0
-        end = len(binary)
-        header_ending = b"\r\n\r\n"
-        header_ending_l = len(header_ending)
+        resp = jsonrpc_response(pino_recv_buffer)
+        if resp is not None:
+            return resp
 
-        index = binary[begin:].find(header_ending)
-        if index == -1:
-            break
-        headers = {}
-        headers_list = binary[begin:begin + index].split(b"\r\n")
-        for header in headers_list:
-            i = header.find(b":")
-            if i == -1:
-                continue
-            key = header[:i]
-            value = header[i+2:]
-            headers[key] = value
-
-        for k, v in headers.items():
-            if v.isdigit():
-                headers[k] = int(v)
-
-        cl = headers.get(b"Content-Length", 0)
-        if begin + index + cl + header_ending_l <= end:
-            b = begin + index + header_ending_l
-            e = b + cl
-            message = json.loads(binary[b:e])
-            return message.get("result", "")
+    log("pino_send_request resp error", args)
 
 def pino_timer():
     while True:
         try:
-            handler, message, args = vim_queue.get(block = False)
-            # print "pino_timer", handler, message, args
-            handler and handler(message, *args)
+            handler, result, args = vim_queue.get(block = False)
+            log("pino_timer", handler, result, args)
+            try:
+                handler and handler(result, *args)
+            except Exception, err:
+                log(traceback.format_exc())
         except Queue.Empty:
-            # print "empty break"
             break
 
 def pino_project_init():
     pino_request(None, "init")
+
+def pino_list():
+    pino_request(list_, "list")
+
+def list_(result, *args):
+    for name in result:
+        print name
+
+def pino_project_where():
+    pino_request(where, "where")
+
+def where(result, *args):
+    log("where result", result, args)
+
+def pino_cd(word):
+    pino_request(cd, "cd", word)
+
+def cd(result, *args):
+    log("cd result", result, args)
+    if result["l"]:
+        cmd = "cd %s" % result["l"][0]
+        log("where result", result, args, cmd)
+        vim.command(cmd)
+        log("where result", result, args, cmd)
 
 def pino_project_reinit():
     pino_request(None, "reinit")
@@ -138,6 +218,7 @@ def pino_project_save():
     pino_request(None, "save")
 
 def quick_fix(result, _, __, type_):
+    log("quick_fix begin", result, type_)
     if type_ == 0 and len(result) == 1:
         filename = result[0]["filename"]
         bufnr = vim.Function("bufnr")(filename)
@@ -146,9 +227,10 @@ def quick_fix(result, _, __, type_):
         else:
             cmd = "edit! %s" % filename
         try:
+            log("quick_fix vim command %s", cmd)
             vim.command(cmd)
         except Exception:
-            pass
+            log(traceback.format_exc())
         lnum = result[0]["lnum"]
         # col = result[0]["text"].find(word)
         # vim.command("echom %s" % repr((locals())))
@@ -183,11 +265,25 @@ PYTHON_END
 " }}}
 
 " Vim Script {{{
+execute 'python pino_init()'
+
+function! pino#project_where()
+    execute 'python pino_project_where()'
+endfunction 
+
+function! pino#leave_vim()
+    execute 'python pino_leave_vim()'
+endfunction 
+
+function! pino#list()
+    execute 'python pino_list()'
+endfunction 
+
 function! pino#project_init()
     execute 'python pino_project_init()'
 endfunction 
 
-function!pino#project_reinit()
+function! pino#project_reinit()
     execute 'python pino_project_reinit()'
 endfunction 
 
@@ -205,6 +301,10 @@ endfunction
 
 function! pino#search(word)
     execute 'python pino_search(r"""' . a:word . '""")'
+endfunction 
+
+function! pino#cd(word)
+    execute 'python pino_cd(r"""' . a:word . '""")'
 endfunction 
 
 function! pino#search_code(word)
