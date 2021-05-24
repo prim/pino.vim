@@ -4,11 +4,9 @@ if exists('g:pino_loaded')
 endif
 let g:pino_loaded = 1
 
-command! -nargs=0 PinoInit :call pino#project_init()
+command! -nargs=0 PinoInitOrLoad :call pino#project_init()
 command! -nargs=0 PinoReinit :call pino#project_reinit()
 command! -nargs=0 PinoSave :call pino#project_save()
-command! -nargs=0 PinoStat :call pino#project_stat()
-command! -nargs=0 PinoWhere :call pino#project_where()
 command! -nargs=0 PinoList :call pino#list()
 
 command! -nargs=1 PinoCd :call pino#cd('<args>')
