@@ -16,6 +16,7 @@ import socket
 import json
 import traceback
 import threading
+import requests
 import Queue
 
 init = False
@@ -23,6 +24,8 @@ exit = False
 pino_socket = None
 job_queue = Queue.Queue(maxsize = 128)
 vim_queue = Queue.Queue(maxsize = 128)
+
+session = requests.Session()
 
 def log(fmt, *args):
     path = vim.eval("g:pino_log_file")
@@ -72,26 +75,13 @@ def pino_leave_vim():
     job_queue.put(("vim_leave_quit", ))
     log("pino_leave_vim end")
 
-def socket_setup():
-    global pino_socket
-
-    ip = vim.eval("g:pino_server_ip")
-    port = int(vim.eval("g:pino_server_port"))
-
-    log("socket setup try", ip, port)
-    pino_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    pino_socket.connect((ip, port))
-    log("socket_setup try end", pino_socket)
-
 def pino_request(*args):
     job_queue.put(args)
 
-def jsonrpc_request(args):
+def pino_send_request(*args):
     action = args[0]
     args = args[1:]
     params = {
-        "jsonrpc": "2.0",
-        "id": 1,
         "method": action,
         "params": {
             "cwf": vim.eval('expand("%:p")'),
@@ -99,74 +89,12 @@ def jsonrpc_request(args):
             "args": args,
         }
     }
-
-    binary = json.dumps(params).encode("utf8")
-    log("json rpc", params)
-    length = len(binary)
-    binary = b"Content-Length: %d\r\nContent-Type: application/vscode-jsonrpc; charset=utf8\r\n\r\n%s" % (length, binary)
-    return binary
-
-def jsonrpc_response(binary):
-    begin = 0
-    end = len(binary)
-    header_ending = b"\r\n\r\n"
-    header_ending_l = len(header_ending)
-
-    index = binary[begin:].find(header_ending)
-    if index == -1:
-        return
-
-    headers = {}
-    headers_list = binary[begin:begin + index].split(b"\r\n")
-    for header in headers_list:
-        i = header.find(b":")
-        if i == -1:
-            continue
-        key = header[:i]
-        value = header[i+2:]
-        headers[key.upper()] = value
-
-    for k, v in headers.items():
-        if v.isdigit():
-            headers[k] = int(v)
-
-    cl = headers.get(b"Content-Length".upper(), 0)
-    if begin + index + cl + header_ending_l <= end:
-        b = begin + index + header_ending_l
-        e = b + cl
-        log("json loads", binary, b, e, len(binary), cl)
-        log("json loads", binary[b:e])
-        message = json.loads(binary[b:e])
-        result = message.get("result", "")
-        if result is None:
-            result = ""
-        return result
-
-def pino_send_request(*args):
-    binary = jsonrpc_request(args)
-
-    global pino_socket
-    if pino_socket is None:
-        socket_setup()
-    try:
-        pino_socket.sendall(binary)
-    except socket.error:
-        socket_setup()
-        pino_socket.sendall(binary)
-
-    pino_recv_buffer = ""
-    while not exit:
-        data = pino_socket.recv(0xffff)
-        if not data:
-            raise socket.error
-        pino_recv_buffer += data
-        log("socket recv", repr(pino_recv_buffer), type(pino_recv_buffer))
-
-        resp = jsonrpc_response(pino_recv_buffer)
-        if resp is not None:
-            return resp
-
-    log("pino_send_request resp error", args)
+    ip = vim.eval("g:pino_server_ip")
+    port = vim.eval("g:pino_server_port")
+    url = "http://%s:%s" % (ip, port)
+    resp = session.post(url, json=params)
+    log("resp.content", resp.content)
+    return json.loads(resp.content)["result"]
 
 def pino_timer():
     while not exit:
